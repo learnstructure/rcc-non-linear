@@ -3,7 +3,7 @@ import numpy as np
 from scipy.interpolate import griddata
 import matplotlib.pyplot as plt
 import math
-import os
+from pathlib import Path
 
 def interpolate_z(df, x, y, method="linear", fallback="nearest"):
     '''Interpolate z for two independent variables x & y'''
@@ -79,10 +79,25 @@ def caltrans_bilinear(df, yield_index):
     return bilinear_df
 
 def load_mander_k():
-    return pd.read_csv("rect_conf_k.csv", header=None)
+    file_path = Path(__file__).parent / "rect_conf_k.csv"
+    return pd.read_csv(file_path, header=None)
+
+def rect_ke(col):
+    """Calculate confinement effectiveness coefficient ke for rectangular columns."""
+    bc = col.B - 2 * col.cover - col.dh
+    hc = col.H - 2 * col.cover - col.dh
+    s_prime = col.sh - col.dh
+    rho = col.As / col.Ag
+    w_prime_top = (bc - col.dh - col.dbTop) / (col.nBarsTop - 1) - col.dh
+    w_prime_left = (hc - col.dh - col.dbTop) / (col.nBarsInt + 1) - col.dh
+    p1 = 1 - 2 * (col.nBarsTop - 1) * w_prime_top**2 / (6 * bc * hc) - 2 * (col.nBarsInt + 1) * w_prime_left**2 / (6 * bc * hc)
+    p2 = 1 - s_prime / (2 * bc)
+    p3 = 1 - s_prime / (2 * hc)
+    ke = p1 * p2 * p3 / (1 - rho)
+    return ke
 
 class RectConcreteMander:
-    def __init__(self, fc_prime, B, H, cover, dh, sh, fyh, esm, nx=2, ny=2):
+    def __init__(self, fc_prime, B, H, cover, dh, sh, fyh, esm, nx=2, ny=2, ke=None):
         Avx = nx * math.pi * dh**2 / 4
         Avy = ny * math.pi * dh**2 / 4
         w_corex = B - 2 * cover - dh
@@ -90,8 +105,9 @@ class RectConcreteMander:
         rho_x = Avx / (w_corey * sh)
         rho_y = Avy / (w_corex * sh)
 
-        f_lx = 0.75 * rho_x * fyh / fc_prime
-        f_ly = 0.75 * rho_y * fyh / fc_prime
+        ke = ke if ke is not None else 0.75
+        f_lx = ke * rho_x * fyh / fc_prime
+        f_ly = ke * rho_y * fyh / fc_prime
 
         k = interpolate_z(load_mander_k(), min(f_lx, f_ly), max(f_lx, f_ly))
         self.fc_prime = fc_prime
@@ -414,6 +430,7 @@ class Model:
             self.divB = props.get("divB", 30)
             self.divD = props.get("divD", 30)
             self.divCover = props.get("divCover", 5)
+            self.ke = props.get("ke", None)
           
         else:
             raise ValueError("Either B and H (rectangular) or D (circular) must be provided.")
@@ -434,6 +451,8 @@ class Model:
 
         self.core_tag, self.cover_tag, self.bar_tag = 1, 2, 3  # material tags
         self.fib_sec_tag, self.elastic_sec_tag = 1, 2
+        self.failure_criteria = props.get("failure_criteria", ["core", "rebar", "strength"])
+        self.core_crush_limit = props.get("core_crush_limit", None)
 
         # Derived
         self.Ec = 57 * math.sqrt(self.fc * 1000)
@@ -468,12 +487,14 @@ class Model:
                 fyh=self.fyh, esm=self.esm
             )   
         else:
+            self.ke = self.ke if self.ke is not None else rect_ke(self)
             material = RectConcreteMander(
                 fc_prime=self.fc,
                 B=self.B, H=self.H, cover=self.cover,
                 dh=self.dh, sh=self.sh,
                 fyh=self.fyh, esm=self.esm,
-                nx=self.nx, ny=self.ny
+                nx=self.nx, ny=self.ny,
+                ke=self.ke,
             )
             self.k_confinement = material.k
         self.confined_props = material.confined_props()
@@ -513,7 +534,9 @@ class Model:
         else:
             plt.show()                # just display interactively
 
-    def run_M_phi_analysis(self, maxK=0.01, dK=0.00001):
+    def run_M_phi_analysis(self, maxK=0.02, dK=0.00002):
+        if maxK is None: maxK = 50 * (self.fy / self.Es) / self.core_h
+        if dK is None: dK = maxK / 1000 
         self.create_model()  
         results_df, yield_step = moment_curvature_analysis(self, maxK, dK)
         bilinear_df = caltrans_bilinear(results_df, yield_step)
@@ -527,54 +550,118 @@ class Model:
         I_eff = mY/(phiY*self.Ec)
         return I_eff/ self.Iz
 
-    def run_pushover_analysis(self, maxU=40, dU=0.05, self_wt=True):
+    def run_pushover_analysis(self, maxU=None, dU=0.05, self_wt=True):
+        if maxU is None: maxU = 0.2 * self.L
         if not self.m_phi_done:
             self.run_M_phi_analysis()
         self.create_model()  
         results_df, yield_step = pushover_analysis(self, maxU, dU, self_wt)
         bilinear_df = caltrans_bilinear(results_df, yield_step)
+        bilinear_df["drift %"] = bilinear_df["displacements"] * 100 / self.L
         self.df_pushover, self.df_pushover_idealized = results_df, bilinear_df
         return results_df, bilinear_df, yield_step
 
 
-col_props = {
-    'fc': 5.5,
-    'B': 20, 'H': 30, 'L': 150,
-    'cover': 1.5,
-    'nBarsTop': 3, 'dbTop': 1,
-    'nBarsBot': 5, 'dbBot': 1.27,
-    # 'nBarsInt': 6, 'dbInt': 0.984,
-    'fy': 68, 'fu': 95, 'Es': 29000, 'e_sh': 0.0115, 'e_ult': 0.12,
-    'dh':0.375, 'sh':3, 'fyh':68, 'esm':0.12,
-    'nx': 2, 'ny':2,
-    'P_axial': 0
-}
+def plot_response(
+    df,
+    x_label=None,
+    y_label=None,
+    title="Response Curve",
+    grid=True,
+    show=True,
+    figsize=(8, 5),
+):
+    """Plots a 2D response curve using matplotlib."""
+    import matplotlib.pyplot as plt
 
-model = Model(col_props)
+    x = df.iloc[:, 0]
+    y = df.iloc[:, 1]
 
-# print(model.confined_props)
-# print(model.unconfined_props)
-# print(model.fib_section)
+    x_label = x_label or str(df.columns[0])
+    y_label = y_label or str(df.columns[1])
 
-#To plot the fiber section, use any of the following methods:
-# model.plot_fib_section()
-# model.fib_section.plot()
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.plot(x, y, linewidth=2, color="#1f77b4")
+    ax.set_title(title, fontsize=13, fontweight="bold")
+    ax.set_xlabel(x_label, fontsize=11)
+    ax.set_ylabel(y_label, fontsize=11)
+    if grid:
+        ax.grid(True, linestyle="--", alpha=0.6)
+    plt.tight_layout()
 
-# results_df, bilinear_df, yield_step = model.run_M_phi_analysis()
-results_df, bilinear_df, yield_step = model.run_pushover_analysis()
+    if show:
+        plt.show()
 
-# print(f"Yield occurred at step: {yield_step}")
-print(bilinear_df)
+    return fig, ax
 
-# plot_response_multi(
-#     dfs=[results_df.iloc[:, 0:2], bilinear_df],
-#     names=["Original", "Bilinear"],
-#     title="Curves Comparison"
-# )
-# plot_response(results_df.iloc[:, 2: 4])
-# print("Effective K", model.k_eff)
 
-# model.create_report()
-print("confinement factor is:", model.k_confinement)
+def plot_response_multi(
+    dfs,
+    names=None,
+    colors=None,
+    x_label=None,
+    y_label=None,
+    title="Response Curve",
+    grid=True,
+    show=True,
+    figsize=(8, 5),
+):
+    """Plots multiple response curves on the same matplotlib axes for comparison."""
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    for i, df in enumerate(dfs):
+        x = df.iloc[:, 0]
+        y = df.iloc[:, 1]
+
+        label = names[i] if names and i < len(names) else f"Trace {i+1}"
+        color = colors[i] if colors and i < len(colors) else None
+
+        ax.plot(x, y, label=label, linewidth=2, color=color)
+
+    ax.set_title(title, fontsize=13, fontweight="bold")
+    ax.set_xlabel(x_label or str(dfs[0].columns[0]), fontsize=11)
+    ax.set_ylabel(y_label or str(dfs[0].columns[1]), fontsize=11)
+    ax.legend(frameon=True)
+    if grid:
+        ax.grid(True, linestyle="--", alpha=0.6)
+    plt.tight_layout()
+
+    if show:
+        plt.show()
+
+    return fig, ax
+
+
+if __name__ == "__main__":
+    col_props = {
+        'fc': 5.5,
+        'B': 20, 'H': 30, 'L': 150,
+        'cover': 1.5,
+        'nBarsTop': 3, 'dbTop': 1,
+        'nBarsBot': 5, 'dbBot': 1.27,
+        # 'nBarsInt': 6, 'dbInt': 0.984,
+        'fy': 68, 'fu': 95, 'Es': 29000, 'e_sh': 0.0115, 'e_ult': 0.12,
+        'dh':0.375, 'sh':3, 'fyh':68, 'esm':0.12,
+        'nx': 2, 'ny':2,
+        'P_axial': 10, #'failure_criteria': ['core', 'strength'], "core_crush_limit": 0.01,
+        "divB": 15, "divD": 25
+    }
+
+    model = Model(col_props)
+
+    # results_df, bilinear_df, yield_step = model.run_M_phi_analysis()
+    results_df, bilinear_df, yield_step = model.run_pushover_analysis()
+
+    # print(f"Yield occurred at step: {yield_step}")
+    print(bilinear_df)
+
+    # plot_response_multi(
+    #     dfs=[results_df.iloc[:, 0:2], bilinear_df],
+    #     names=["Original", "Bilinear"],
+    #     title="Curves Comparison"
+    # )
+
 
 

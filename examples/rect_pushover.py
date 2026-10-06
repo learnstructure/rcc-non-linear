@@ -10,7 +10,7 @@ col_props = {
     'fy': 68, 'fu': 95, 'Es': 29000, 'e_sh': 0.0115, 'e_ult': 0.12,
     'dh':0.375, 'sh':3, 'fyh':68, 'esm':0.12,
     'nx': 2, 'ny':2,
-    'P_axial': 0, 'failure_criteria': ['core', 'strength'], "core_crush_limit": 0.01,
+    'P_axial': 10, #'failure_criteria': ['core', 'strength'], "core_crush_limit": 0.01,
     "divB": 15, "divD": 25
 }
 
@@ -27,15 +27,15 @@ model = Model(col_props)
 # results_df, bilinear_df, yield_step = model.run_M_phi_analysis()
 results_df, bilinear_df, yield_step = model.run_pushover_analysis()
 print(model.crushed_cores)
-model.plot_fib_section_damage()
+# model.plot_fib_section_damage()
 # print(f"Yield occurred at step: {yield_step}")
-# print(bilinear_df)
+print(bilinear_df)
 
-# plot_response_multi(
-#     dfs=[results_df.iloc[:, 0:2], bilinear_df],
-#     names=["Original", "Bilinear"],
-#     title="Curves Comparison"
-# )
+plot_response_multi(
+    dfs=[results_df.iloc[:, 0:2], bilinear_df],
+    names=["Original", "Bilinear"],
+    title="Curves Comparison"
+)
 # plot_response(results_df.iloc[:, 2: 4])
 # print("Effective K", model.k_eff)
 

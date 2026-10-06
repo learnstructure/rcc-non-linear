@@ -85,34 +85,39 @@ def get_disp_mPhi(model):
     disp_u = disp_yi + disp_p
     return disp_yi, disp_u
 
-def plot_response(df, x_label=None, y_label=None, title="Response Curve"):
-    import plotly.graph_objects as go
+def plot_response(
+    df,
+    x_label=None,
+    y_label=None,
+    title="Response Curve",
+    grid=True,
+    show=True,
+    figsize=(8, 5),
+):
+    """
+    Plots a 2D response curve using matplotlib.
+    """
+    import matplotlib.pyplot as plt
 
     x = df.iloc[:, 0]
     y = df.iloc[:, 1]
 
-    x_label = x_label or df.columns[0]
-    y_label = y_label or df.columns[1]
+    x_label = x_label or str(df.columns[0])
+    y_label = y_label or str(df.columns[1])
 
-    fig = go.Figure(
-        go.Scatter(
-            x=x,
-            y=y,
-            mode="lines",
-            line=dict(width=3),
-            hovertemplate=f"{x_label}: %{{x:.4f}}<br>{y_label}: %{{y:.4f}}<extra></extra>",
-        )
-    )
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.plot(x, y, linewidth=2, color="#1f77b4")
+    ax.set_title(title, fontsize=13, fontweight="bold")
+    ax.set_xlabel(x_label, fontsize=11)
+    ax.set_ylabel(y_label, fontsize=11)
+    if grid:
+        ax.grid(True, linestyle="--", alpha=0.6)
+    plt.tight_layout()
 
-    fig.update_layout(
-        title=title,
-        xaxis_title=x_label,
-        yaxis_title=y_label,
-        template="plotly_white",
-        # hovermode="x unified",
-    )
+    if show:
+        plt.show()
 
-    fig.show()
+    return fig, ax
 
 
 def plot_response_multi(
@@ -122,38 +127,38 @@ def plot_response_multi(
     x_label=None,
     y_label=None,
     title="Response Curve",
+    grid=True,
+    show=True,
+    figsize=(8, 5),
 ):
-    import plotly.graph_objects as go
+    """
+    Plots multiple response curves on the same matplotlib axes for comparison.
+    """
+    import matplotlib.pyplot as plt
 
-    fig = go.Figure()
+    fig, ax = plt.subplots(figsize=figsize)
 
     for i, df in enumerate(dfs):
         x = df.iloc[:, 0]
         y = df.iloc[:, 1]
 
-        xl = x_label or df.columns[0]
-        yl = y_label or df.columns[1]
+        label = names[i] if names and i < len(names) else f"Trace {i+1}"
+        color = colors[i] if colors and i < len(colors) else None
 
-        fig.add_trace(
-            go.Scatter(
-                x=x,
-                y=y,
-                mode="lines",
-                name=names[i] if names else f"Trace {i+1}",
-                line=dict(width=3, color=colors[i] if colors else None),
-                hovertemplate=f"{xl}: %{{x:.4f}}<br>{yl}: %{{y:.4f}}<extra></extra>",
-            )
-        )
+        ax.plot(x, y, label=label, linewidth=2, color=color)
 
-    fig.update_layout(
-        title=title,
-        xaxis_title=x_label or dfs[0].columns[0],
-        yaxis_title=y_label or dfs[0].columns[1],
-        template="plotly_white",
-        # hovermode="x unified",
-    )
+    ax.set_title(title, fontsize=13, fontweight="bold")
+    ax.set_xlabel(x_label or str(dfs[0].columns[0]), fontsize=11)
+    ax.set_ylabel(y_label or str(dfs[0].columns[1]), fontsize=11)
+    ax.legend(frameon=True)
+    if grid:
+        ax.grid(True, linestyle="--", alpha=0.6)
+    plt.tight_layout()
 
-    fig.show()
+    if show:
+        plt.show()
+
+    return fig, ax
 
 
 def extract_backbone_curve(df, disp_col=None, force_col=None, envelope="both"):

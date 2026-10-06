@@ -149,7 +149,7 @@ class CircSection:
             ['section', 'Fiber', self.sec_tag, '-GJ', GJ],
             ['patch', 'circ', self.core_tag, self.nAng, self.nRad, 0.0, 0.0, 0.0, self.R_core, 0.0, 360.0],
             ['patch', 'circ', self.cover_tag, self.nAng, self.nRad_cover, 0.0, 0.0, self.R_core, self.D/2, 0.0, 360.0],
-            ['layer', 'circ', self.bar_tag, self.nBars, self.Ab, 0.0, 0.0, self.R_bar, 0.0, 360.0]
+            ['layer', 'circ', self.bar_tag, self.nBars, self.Ab, 0.0, 0.0, self.R_bar, 180, -180.0 + 360.0 / self.nBars]
         ]
         opsv.fib_sec_list_to_cmds(self.fib_sec)
 
@@ -174,7 +174,7 @@ def run_gravity_analysis(P_axial, type = "MC"):
         ops.load(2, 0.0, -P_axial, 0.0)
     ops.integrator('LoadControl', 0.0)
     ops.system('SparseGeneral', '-piv')
-    ops.test('NormUnbalance', 1e-9, 10)
+    ops.test('NormUnbalance', 1e-6, 50)
     ops.numberer('Plain')
     ops.constraints('Plain')
     ops.algorithm('Newton')
@@ -275,10 +275,7 @@ def pushover_analysis(model, maxU, dU, self_wt):
     ops.timeSeries('Linear', 2)
     ops.pattern('Plain', 2, 2)
     ops.load(2, 1.0, 0.0, 0.0)
-    if model.section_type == "circular":
-        ops.integrator('DisplacementControl', 2, 1, dU)
-    else:
-        ops.integrator('DisplacementControl', 2, 1, -dU)
+    ops.integrator('DisplacementControl', 2, 1, -dU)
 
     results = {
         'displacements': [0.0], 'forces': [0.0],
@@ -296,22 +293,14 @@ def pushover_analysis(model, maxU, dU, self_wt):
         if ok != 0: break
         step += 1
         ops.reactions()
-        if model.section_type == "circular": 
-            curr_force = -ops.nodeReaction(1, 1)
-            curr_disp = ops.nodeDisp(2, 1)
-        else:
-            curr_force = ops.nodeReaction(1, 1)
-            curr_disp = -ops.nodeDisp(2, 1)
+        curr_force = ops.nodeReaction(1, 1)
+        curr_disp = -ops.nodeDisp(2, 1)
         # print(curr_disp, curr_force)
         if curr_force > peak_force: peak_force = curr_force
         
         # --- Fiber Responses ---
-        if model.section_type == "circular":
-            sig_c, eps_c = ops.eleResponse(1, 'section', model.fib_sec_tag, 'fiber', -model.core_h, 0.0, model.core_tag, 'stressStrain')
-            sig_s, eps_s  = ops.eleResponse(1, 'section', model.fib_sec_tag, 'fiber', model.bar_h, 0.0, model.bar_tag, 'stressStrain')   
-        else:
-            sig_c, eps_c = ops.eleResponse(1, 'section', model.fib_sec_tag, 'fiber', model.core_h, 0.0, model.core_tag, 'stressStrain')
-            sig_s, eps_s  = ops.eleResponse(1, 'section', model.fib_sec_tag, 'fiber', -model.bar_h, 0.0, model.bar_tag, 'stressStrain')
+        sig_c, eps_c = ops.eleResponse(1, 'section', model.fib_sec_tag, 'fiber', model.core_h, 0.0, model.core_tag, 'stressStrain')
+        sig_s, eps_s  = ops.eleResponse(1, 'section', model.fib_sec_tag, 'fiber', -model.bar_h, 0.0, model.bar_tag, 'stressStrain')
 
         if (yield_disp is None) and (eps_s >= model.fy / model.Es):
             yield_disp = curr_disp
@@ -473,7 +462,9 @@ class Model:
         else:
             plt.show()                # just display interactively
 
-    def run_M_phi_analysis(self, maxK=0.01, dK=0.00001):
+    def run_M_phi_analysis(self, maxK=0.02, dK=0.00002):
+        if maxK is None: maxK = 50 * (self.fy / self.Es) / self.core_h
+        if dK is None: dK = maxK / 1000 
         self.create_model()  
         results_df, yield_step = moment_curvature_analysis(self, maxK, dK)
         bilinear_df = caltrans_bilinear(results_df, yield_step)
@@ -487,47 +478,110 @@ class Model:
         I_eff = mY/(phiY*self.Ec)
         return I_eff/ self.Iz
 
-    def run_pushover_analysis(self, maxU=40, dU=0.05, self_wt=True):
+    def run_pushover_analysis(self, maxU=None, dU=0.05, self_wt=True):
+        if maxU is None: maxU = 0.2 * self.L
         if not self.m_phi_done:
             self.run_M_phi_analysis()
         self.create_model()  
         results_df, yield_step = pushover_analysis(self, maxU, dU, self_wt)
         bilinear_df = caltrans_bilinear(results_df, yield_step)
+        bilinear_df["drift %"] = bilinear_df["displacements"] * 100 / self.L
         self.df_pushover, self.df_pushover_idealized = results_df, bilinear_df
         return results_df, bilinear_df, yield_step
 
 
-col_props = {
-    'fc': 6.1,
-    'D': 48, 'L': 324, 'cover': 2,
-    'nBars': 18, 'db': 1.41,
-    'fy': 75.2, 'fu': 102.4, 'Es': 29000, 'Esh':1247, 'e_ult': 0.122,
-    'dh':0.883889, 'sh':6, 'fyh':54.8, 'esm':0.125, 
-    'P_axial': 570
-}
+def plot_response(
+    df,
+    x_label=None,
+    y_label=None,
+    title="Response Curve",
+    grid=True,
+    show=True,
+    figsize=(8, 5),
+):
+    """Plots a 2D response curve using matplotlib."""
+    import matplotlib.pyplot as plt
 
-model = Model(col_props)
+    x = df.iloc[:, 0]
+    y = df.iloc[:, 1]
 
-# print(model.confined_props)
-# print(model.unconfined_props)
-# print(model.fib_section)
+    x_label = x_label or str(df.columns[0])
+    y_label = y_label or str(df.columns[1])
 
-#To plot the fiber section, use any of the following methods:
-# model.plot_fib_section()
-# model.fib_section.plot()
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.plot(x, y, linewidth=2, color="#1f77b4")
+    ax.set_title(title, fontsize=13, fontweight="bold")
+    ax.set_xlabel(x_label, fontsize=11)
+    ax.set_ylabel(y_label, fontsize=11)
+    if grid:
+        ax.grid(True, linestyle="--", alpha=0.6)
+    plt.tight_layout()
 
-# results_df, bilinear_df, yield_step = model.run_M_phi_analysis()
-results_df, bilinear_df, yield_step = model.run_pushover_analysis()
+    if show:
+        plt.show()
 
-# print(f"Yield occurred at step: {yield_step}")
-print(results_df)
-# print("Effective MOI", model.k_eff)
-# plot_response_multi(
-#     dfs=[results_df.iloc[:, 0:2], bilinear_df],
-#     names=["Original", "Bilinear"],
-# )
-# plot_response(results_df.iloc[:, 2:4])
-# print("Effective K", model.k_eff)
+    return fig, ax
 
 
+def plot_response_multi(
+    dfs,
+    names=None,
+    colors=None,
+    x_label=None,
+    y_label=None,
+    title="Response Curve",
+    grid=True,
+    show=True,
+    figsize=(8, 5),
+):
+    """Plots multiple response curves on the same matplotlib axes for comparison."""
+    import matplotlib.pyplot as plt
 
+    fig, ax = plt.subplots(figsize=figsize)
+
+    for i, df in enumerate(dfs):
+        x = df.iloc[:, 0]
+        y = df.iloc[:, 1]
+
+        label = names[i] if names and i < len(names) else f"Trace {i+1}"
+        color = colors[i] if colors and i < len(colors) else None
+
+        ax.plot(x, y, label=label, linewidth=2, color=color)
+
+    ax.set_title(title, fontsize=13, fontweight="bold")
+    ax.set_xlabel(x_label or str(dfs[0].columns[0]), fontsize=11)
+    ax.set_ylabel(y_label or str(dfs[0].columns[1]), fontsize=11)
+    ax.legend(frameon=True)
+    if grid:
+        ax.grid(True, linestyle="--", alpha=0.6)
+    plt.tight_layout()
+
+    if show:
+        plt.show()
+
+    return fig, ax
+
+
+if __name__ == "__main__":
+    col_props = {
+        'fc': 6.1,
+        'D': 48, 'L': 324, 'cover': 2,
+        'nBars': 18, 'db': 1.41,
+        'fy': 75.2, 'fu': 102.4, 'Es': 29000, 'Esh': 1247, 'e_sh': 0.005, 'e_ult': 0.122,
+        'dh':0.888, 'sh':6, 'fyh':54.8, 'esm':0.125,
+        'P_axial': 570,  #'failure_criteria': ['rebar'], #"core_crush_limit": 0.01, 'rupture_limit': 0.1,
+        'nAng': 30, 'nRad':20, 'nRad_cover': 8
+    }
+
+    model = Model(col_props)
+
+    # results_df, bilinear_df, yield_step = model.run_M_phi_analysis()
+    results_df, bilinear_df, yield_step = model.run_pushover_analysis()
+
+    # print(f"Yield occurred at step: {yield_step}")
+    print(results_df)
+
+    # plot_response_multi(
+    #     dfs=[results_df.iloc[:, 0:2], bilinear_df],
+    #     names=["Original", "Bilinear"],
+    # )

@@ -71,7 +71,6 @@ pip install git+https://github.com/learnstructure/rcc-non-linear.git
 - scipy
 - matplotlib
 - pandas
-- plotly
 - openseespy (optional, for OpenSees integration)
 - opsvis (optional, for OpenSees visualization)
 - reportlab
